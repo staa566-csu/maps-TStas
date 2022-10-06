@@ -1,0 +1,183 @@
+---
+title: "STAA 566 HW 3 - Map"
+author: "Tiana Stastny"
+format: 
+  html:
+    self-contained: true
+editor: visual
+---
+
+# 2022 Thailand District Population Map
+
+The purpose of this map is to display how population varies across the district regions in Thailand. The data used is from 2022.
+
+## Thailand shape data
+
+The Thailand shape data, which gives the boundary information for various spatial units (province, district, sub-district, etc) can be downloaded from here:
+
+<https://data.humdata.org/dataset/cod-ab-tha>
+
+Specifically, I used the 'tha_adm_rtsd_itos_20210121_shp.zip' file.
+
+District is a subset of province, and it was more interesting to plot the data at the district level, which is found in the 'tha_admbnda_adm2_rtsd_20220121.shp' file. The spatial units being displayed in the maps are regional districts.
+
+## Thailand population data for 2022
+
+The Thailand population data came from the same 'Humanitarian Data Exchange' (HDX) source:
+
+<https://data.humdata.org/dataset/cod-ps-tha>
+
+Specifically, I used the 'tha_admpop_adm2_2022.csv' file.
+
+## Load libraries
+
+```{r}
+library(tidyverse)
+library(rgeos)
+library(rgdal)
+library(maptools)
+library(broom)
+library(dplyr)
+library(viridis)
+library(leaflet)
+library(mapview)
+library(htmlwidgets)
+```
+
+## Load shape data
+
+```{r}
+# load data
+thailand_shape_data <- readOGR("C:/Users/tiana/OneDrive/Documents/CSU_STAA_566_Data_Viz/maps-TStas/tha_adm_rtsd_itos_20210121_shp/tha_admbnda_adm2_rtsd_20220121.shp") 
+
+# tidying the shape data gets it into a data frame with longitude and latitude
+thai_tidy <- tidy(thailand_shape_data, region="ADM2_PCODE")
+
+# plot just districts to begin with
+district_plot <- ggplot() + geom_polygon(data = thai_tidy, aes(x = long, y = lat, group = group), fill="white", color="grey")+
+  theme_void() +
+  coord_map()
+district_plot
+```
+
+## Load population data
+
+Load the population data.
+
+```{r}
+# read in population data from csv file
+
+thailand_population <- read.csv("C:/Users/tiana/OneDrive/Documents/CSU_STAA_566_Data_Viz/maps-TStas/tha_admpop_adm2_2022.csv")
+```
+
+Important columns include ADM2_EN (district name) and T_TL (total population for a district). We will also need to keep track of ADM2_PCODE, the code value for each district. This will be used to combine the population data with the shape data.
+
+```{r}
+# want the ADM2_EN, ADM2_PCODE and T_TL columns
+# Notes on levels of data:
+# 0 = country
+# 1 = province
+# 2 = district  ** we want level 2
+# 3 = sub-district
+```
+
+Make a new dataframe comprised of the desired columns.
+
+```{r}
+# make new dataframe
+district_populations <- data.frame(thailand_population$ADM2_NAME, thailand_population$ADM2_PCODE, thailand_population$T_TL)
+
+# take a look
+head(district_populations)
+
+# get dimensions
+dim(district_populations)
+```
+
+Make a basic bar plot to get high level overview of population values.
+
+```{r}
+p_bar <- ggplot(data = district_populations, aes(x=district_populations$thailand_population.ADM2_NAME, y=district_populations$thailand_population.T_TL)) + 
+  geom_bar(stat="identity") + 
+  theme(axis.text.x=element_blank())  # remove x-axis labels - too messy for now
+p_bar
+```
+
+## Combine the geospatial and population data
+
+Use the value of the district code (under 'ADM2_PCODE' in the population data and 'id' in the tidied spatial data) to combine the shape and population data.
+
+```{r}
+# combine geospatial and population data
+# geospatial data is in: thai_tidy
+# population data is in: district_populations
+
+districts_and_populations <- thai_tidy %>% 
+  left_join(., district_populations, by=c("id"="thailand_population.ADM2_PCODE"))
+
+# review
+head(districts_and_populations)
+```
+
+## Make choropleth of 2022 Thailand district populations
+
+First, try a basic version of a choropleth.
+
+```{r}
+# basic choropleth 
+thailand_pop <- ggplot() +
+  geom_polygon(data =  districts_and_populations, aes(fill = districts_and_populations$thailand_population.T_TL, x = long, y = lat, group = group)) +
+  theme_void() +
+  coord_map()
+
+thailand_pop
+```
+
+Now, improve the basic plot by updating color, legend, and formatting. I found using a log scale helped improve the color differentiation, which this post suggests:
+
+<https://r-graph-gallery.com/327-chloropleth-map-from-geojson-with-ggplot2.html>
+
+```{r}
+# improve coloring, legend, etc
+thailand_pop_2 <- ggplot() + 
+  geom_polygon(data =  districts_and_populations, aes(fill = districts_and_populations$thailand_population.T_TL, x = long, y = lat, group = group)) +
+  theme_void() +
+  scale_fill_viridis(trans = "log", breaks=c(1000, 10000, 50000, 100000, 500000, 1000000), name="District population", guide = guide_legend(keyheight = unit(3, units="mm"), keywidth=unit(12, units="mm"), label.position = "bottom", title.position = 'top', nrow=1))+
+  labs(
+    title="2022 Thailand district population",
+  ) + 
+  coord_map()
+
+thailand_pop_2
+
+# save ggplot object as png
+ggsave("thailand_population_choropleth.png", bg="white")
+```
+
+## Use leaflet to build an interactive plot
+
+It would be useful to be able to zoom in, click on a district, and be able to see both the name and population of that district.
+
+```{r}
+# set colors for leaflet
+colors_for_districts <- colorQuantile("viridis", NULL, n = 6)
+
+# create popup of both district name and population value, each on one line
+popup_district_names <- paste0("<strong>District: </strong>", district_populations$thailand_population.ADM2_NAME, "<br/>", "<strong>Population: </strong>", district_populations$thailand_population.T_TL)
+
+# build leaflet
+thailand_leaflet <- leaflet(thailand_shape_data) %>%
+  addTiles() %>%
+  setView(lat = 13.7563, lng = 100.5018, zoom = 5) %>%  # start with lat, lng of Bangkok
+  addPolygons(
+    fillColor = ~colors_for_districts(district_populations$thailand_population.T_TL),
+    fillOpacity = 0.8,
+    smoothFactor = 0.5,
+    popup = popup_district_names
+  )
+
+thailand_leaflet
+
+# save
+saveWidget(thailand_leaflet, file="thailand_population_leaflet.html")
+```
